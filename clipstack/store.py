@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Union
 
 
 class Store:
@@ -8,7 +9,7 @@ class Store:
     Newest item is first. Adding an existing item moves it to the front.
     """
 
-    def __init__(self, path, max_items: int):
+    def __init__(self, path: Union[str, Path], max_items: int):
         self.path = Path(path)
         self.max_items = max_items
         self._items = self._load()
@@ -37,5 +38,5 @@ class Store:
         del self._items[self.max_items:]
         self._save()
 
-    def items(self) -> list:
+    def items(self) -> "list[str]":
         return list(self._items)
