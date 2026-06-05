@@ -7,9 +7,7 @@
     <string>com.clipstack</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__PYTHON__</string>
-        <string>-m</string>
-        <string>clipstack.app</string>
+        <string>__APP_EXEC__</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__CLIPSTACK_DIR__</string>

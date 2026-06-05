@@ -20,7 +20,10 @@ cd clipstack
 ./install.sh
 ```
 
-That is it. ClipStack starts immediately and launches automatically on login.
+That is it. The installer builds a small `ClipStack.app`, so macOS shows the
+name **ClipStack** (not "python3") in permission prompts, the Background
+Activity notice, and Login Items. ClipStack starts immediately and launches
+automatically on login.
 
 On first run, macOS asks for **Accessibility** and **Input Monitoring**
 permissions, which it needs to read the hotkey and paste for you. Grant them in

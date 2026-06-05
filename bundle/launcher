@@ -1,0 +1,6 @@
+#!/bin/bash
+# ClipStack.app launcher. macOS runs this as the app's executable, so the
+# permission prompts, Background Activity notice, and Login Items entry all
+# show "ClipStack" instead of "python3". It just hands off to the Python app.
+cd "__CLIPSTACK_DIR__"
+exec "__PYTHON__" -m clipstack.app
