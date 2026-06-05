@@ -14,16 +14,19 @@ class Store:
         self.max_items = max_items
         self._items = self._load()
 
-    def _load(self) -> list:
+    def _load(self) -> "list[str]":
         if not self.path.exists():
             return []
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 return data
-            return []
         except (json.JSONDecodeError, ValueError):
-            return []
+            pass
+        # Corrupt or non-list content: reset to empty and overwrite the file
+        # so it doesn't linger broken until the next add().
+        self.path.write_text(json.dumps([]), encoding="utf-8")
+        return []
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

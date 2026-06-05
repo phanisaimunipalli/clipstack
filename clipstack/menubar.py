@@ -33,6 +33,7 @@ class MenuBar(NSObject):
         self._build_status_item()
         return self
 
+    @objc.python_method
     def _build_status_item(self):
         bar = NSStatusBar.systemStatusBar()
         self._status_item = bar.statusItemWithLength_(NSVariableStatusItemLength)
@@ -60,12 +61,15 @@ class MenuBar(NSObject):
             empty.setEnabled_(False)
             menu.addItem_(empty)
         else:
-            for index, text in enumerate(items):
+            for text in items:
                 item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                     self._label_for(text), b"clipSelected:", ""
                 )
                 item.setTarget_(self)
-                item.setTag_(index)
+                # Attach the full text to the item itself rather than an index,
+                # so a background clipboard write while the menu is open can't
+                # shift indices and paste the wrong entry.
+                item.setRepresentedObject_(text)
                 menu.addItem_(item)
         menu.addItem_(NSMenuItem.separatorItem())
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -74,6 +78,7 @@ class MenuBar(NSObject):
         quit_item.setTarget_(NSApplication.sharedApplication())
         menu.addItem_(quit_item)
 
+    @objc.python_method
     def _label_for(self, text):
         label = " ".join(text.split())
         if len(label) > MENU_LABEL_MAX:
@@ -82,14 +87,15 @@ class MenuBar(NSObject):
 
     # Action fired when a history item is clicked.
     def clipSelected_(self, sender):
-        items = self._store.items()
-        index = sender.tag()
-        if 0 <= index < len(items):
-            paste_text(items[index])
+        text = sender.representedObject()
+        if text:
+            paste_text(text)
 
+    @objc.python_method
     def open(self):
         """Open the menu programmatically (called from the hotkey)."""
         callAfter(self._perform_click)
 
+    @objc.python_method
     def _perform_click(self):
         self._status_item.button().performClick_(None)

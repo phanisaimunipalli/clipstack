@@ -46,6 +46,14 @@ def test_corrupt_history_resets_to_empty(tmp_path):
     assert s.items() == []
 
 
+def test_corrupt_history_is_overwritten_on_disk(tmp_path):
+    path = tmp_path / "history.json"
+    path.write_text("{ not valid json")
+    Store(path, max_items=50)
+    # The corrupt file is repaired immediately, not left until the next add().
+    assert json.loads(path.read_text()) == []
+
+
 def test_blank_text_is_ignored(tmp_path):
     s = Store(tmp_path / "history.json", max_items=50)
     s.add("   ")
