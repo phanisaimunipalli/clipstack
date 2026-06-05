@@ -34,10 +34,10 @@ A lightweight, open source macOS clipboard history manager. Lives in the menu ba
 
 | Concern | Library |
 |---|---|
-| Menu bar UI | `rumps` |
+| Menu bar UI (status item + native menu) | `pyobjc` (AppKit) |
 | Global hotkey | `pynput` |
 | Clipboard read/write | `pyperclip` |
-| Paste simulation + excluded app detection | `pyobjc` |
+| Paste simulation + excluded app detection | `pyobjc` (Quartz + AppKit) |
 | Config + history persistence | stdlib (`json`, `pathlib`) |
 | Tests | `pytest` |
 
@@ -47,11 +47,13 @@ Python 3 and Git are both pre-installed on macOS — no prerequisites beyond clo
 
 ## Architecture
 
-Three concerns run in the same process:
+The process runs as a PyObjC accessory app (no Dock icon). Three concerns:
 
 1. **Clipboard Watcher** — background thread, polls clipboard every 0.5s. On change, checks excluded apps, then calls `store.add()`.
-2. **Menu Bar UI** — `rumps` app on the main thread. Renders top N items as menu entries. Clicking an item pastes immediately.
-3. **Hotkey Listener** — background thread via `pynput`. Default `⌘⇧V` opens the menu bar dropdown programmatically.
+2. **Menu Bar UI** — a raw `NSStatusItem` with a native `NSMenu`, owned on the main thread. The menu is rebuilt fresh from the store each time it opens (via `NSMenuDelegate.menuNeedsUpdate_`), so no polling timer is needed. Clicking an item pastes it immediately.
+3. **Hotkey Listener** — background thread via `pynput`. Default `⌘⇧V` genuinely opens the menu by calling `statusItem.button().performClick_(None)` on the main thread (marshalled via `PyObjCTools.AppHelper.callAfter`).
+
+**Why raw PyObjC instead of `rumps`:** `rumps` does not expose a public API to open its menu programmatically, so a hotkey could only nudge the user to click. A raw `NSStatusItem` lets the hotkey truly pop the menu open, fully satisfying the hotkey requirement, while staying native and small.
 
 ---
 
@@ -61,11 +63,14 @@ Three concerns run in the same process:
 clipstack/
 ├── install.sh                  # pip install + Launch Agent setup + launchctl load
 ├── uninstall.sh                # reverses install.sh cleanly
-├── requirements.txt            # rumps, pynput, pyperclip, pyobjc
+├── requirements.txt            # pynput, pyperclip, pyobjc (Cocoa + Quartz)
 ├── clipstack/
-│   ├── app.py                  # entry point, wires all three concerns together
+│   ├── app.py                  # entry point: NSApplication run loop + wiring
+│   ├── menubar.py              # NSStatusItem + NSMenu, rebuild-on-open, open()
 │   ├── watcher.py              # clipboard polling loop (background thread)
 │   ├── hotkey.py               # global hotkey listener (background thread)
+│   ├── paste.py                # clipboard write + Cmd+V simulation (Quartz)
+│   ├── appkit.py               # frontmost-app bundle id lookup (AppKit)
 │   ├── store.py                # history list + read/write to history.json
 │   └── config.py               # loads ~/.clipstack/config.json with defaults
 ├── assets/
@@ -87,6 +92,12 @@ clipstack/
 3. Get frontmost app bundle ID via `NSWorkspace.sharedWorkspace().frontmostApplication().bundleIdentifier()`
 4. If bundle ID is in `config.excluded_apps`, skip silently
 5. Call `store.add(text)` — prepend to list, trim to `max_items`, write to `~/.clipstack/history.json`
+
+### Opening the Menu
+
+1. **Via icon:** user clicks the `NSStatusItem` button → the attached `NSMenu` opens automatically.
+2. **Via hotkey:** `pynput` fires the callback on its listener thread → `AppHelper.callAfter` marshals to the main thread → `statusItem.button().performClick_(None)` opens the same menu.
+3. Either path triggers `menuNeedsUpdate_`, which rebuilds the menu items from `store.items()` so the list is always current.
 
 ### Paste on Selection
 
@@ -152,7 +163,7 @@ The Launch Agent has `KeepAlive = true` so the process auto-restarts on crash.
 - `tests/test_store.py` — add, trim, dedup logic
 - `tests/test_config.py` — default fallback behavior when config is missing or invalid
 - Run with: `python -m pytest`
-- No mocking of OS APIs (pyobjc/rumps) — those are not unit-testable in a useful way
+- No mocking of OS APIs (AppKit/Quartz/pynput) — those are validated by manual smoke test, not unit tests
 
 ---
 

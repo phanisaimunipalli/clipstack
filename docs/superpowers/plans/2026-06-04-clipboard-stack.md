@@ -4,9 +4,9 @@
 
 **Goal:** Build a lightweight open source macOS clipboard history manager that lives in the menu bar, opens via a global hotkey, and pastes the selected item immediately.
 
-**Architecture:** A single Python process runs three concerns: a background clipboard watcher (polls every 0.5s), a `rumps` menu bar UI (renders history, pastes on click), and a `pynput` global hotkey listener (opens the menu). History and config persist as JSON under `~/.clipstack/`. Installation is one command: clone the public repo and run `./install.sh`, which pip-installs deps and registers a Launch Agent.
+**Architecture:** A single Python process runs as a PyObjC accessory app (no Dock icon) with three concerns: a background clipboard watcher (polls every 0.5s), a native `NSStatusItem` + `NSMenu` menu bar UI (rebuilds from history each time it opens, pastes on click), and a `pynput` global hotkey listener that genuinely opens the menu via `statusItem.button().performClick_()`. History and config persist as JSON under `~/.clipstack/`. Installation is one command: clone the public repo and run `./install.sh`, which pip-installs deps and registers a Launch Agent.
 
-**Tech Stack:** Python 3, rumps (menu bar), pynput (hotkey), pyperclip (clipboard), pyobjc (paste simulation + frontmost-app detection), pytest (tests).
+**Tech Stack:** Python 3, pyobjc (AppKit for the status item/menu, Quartz for paste simulation, AppKit for frontmost-app detection), pynput (hotkey), pyperclip (clipboard), pytest (tests).
 
 ---
 
@@ -16,18 +16,19 @@
 clipstack/
 ├── install.sh                  # pip install + Launch Agent setup + launchctl load
 ├── uninstall.sh                # reverses install.sh cleanly
-├── requirements.txt            # rumps, pynput, pyperclip, pyobjc
+├── requirements.txt            # pynput, pyperclip, pyobjc (Cocoa + Quartz), pytest
 ├── README.md                   # setup + usage for the public repo
 ├── .gitignore
 ├── clipstack/
 │   ├── __init__.py
 │   ├── config.py               # loads ~/.clipstack/config.json with defaults
 │   ├── store.py                # history list + read/write to history.json
+│   ├── appkit.py               # frontmost-app bundle ID lookup (AppKit)
+│   ├── paste.py                # write to clipboard + simulate Cmd+V (Quartz)
 │   ├── watcher.py              # clipboard polling loop (background thread)
-│   ├── paste.py                # write to clipboard + simulate Cmd+V (pyobjc)
-│   ├── appkit.py               # frontmost-app bundle ID lookup (pyobjc)
 │   ├── hotkey.py               # global hotkey listener (background thread)
-│   └── app.py                  # entry point, wires all concerns together
+│   ├── menubar.py              # NSStatusItem + NSMenu, rebuild-on-open, open()
+│   └── app.py                  # entry point: NSApplication run loop + wiring
 ├── assets/
 │   └── icon.png                # 16x16 menu bar template image
 ├── tests/
@@ -38,8 +39,9 @@ clipstack/
 
 **Responsibility split:**
 - `config.py` and `store.py` are pure, OS-independent, and fully unit-tested.
-- `paste.py` and `appkit.py` isolate the pyobjc OS calls behind small functions so the rest of the code stays testable.
-- `watcher.py`, `hotkey.py`, and `app.py` wire things together and are validated by manual smoke test, not unit tests.
+- `appkit.py` and `paste.py` isolate single pyobjc OS calls behind small functions.
+- `menubar.py` owns all AppKit status-item/menu code in one place.
+- `watcher.py`, `hotkey.py`, and `app.py` wire things together. Validated by manual smoke test, not unit tests.
 
 ---
 
@@ -60,13 +62,12 @@ __pycache__/
 venv/
 *.log
 .DS_Store
-docs/superpowers/specs/.superpowers/
+.superpowers/
 ```
 
 - [ ] **Step 2: Create `requirements.txt`**
 
 ```
-rumps==0.4.0
 pynput==1.7.7
 pyperclip==1.9.0
 pyobjc-framework-Cocoa==10.3.1
@@ -332,7 +333,7 @@ git commit -m "feat: store module with history persistence and dedup"
 **Files:**
 - Create: `clipstack/clipstack/appkit.py`
 
-This module isolates a pyobjc OS call. It is not unit-tested (no useful way to mock the frontmost app); it is validated during the Task 8 smoke test.
+This module isolates a pyobjc OS call. It is not unit-tested (no useful way to mock the frontmost app); it is validated during the Task 9 smoke test.
 
 - [ ] **Step 1: Write the implementation**
 
@@ -341,7 +342,7 @@ This module isolates a pyobjc OS call. It is not unit-tested (no useful way to m
 from AppKit import NSWorkspace
 
 
-def frontmost_bundle_id() -> str | None:
+def frontmost_bundle_id():
     """Return the bundle identifier of the frontmost application, or None."""
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
     if app is None:
@@ -368,7 +369,7 @@ git commit -m "feat: frontmost app bundle id lookup"
 **Files:**
 - Create: `clipstack/clipstack/paste.py`
 
-This module isolates pyperclip + Quartz OS calls. Not unit-tested; validated during the Task 8 smoke test.
+This module isolates pyperclip + Quartz OS calls. Not unit-tested; validated during the Task 9 smoke test.
 
 - [ ] **Step 1: Write the implementation**
 
@@ -426,7 +427,7 @@ git commit -m "feat: paste helper with clipboard write and Cmd+V simulation"
 **Files:**
 - Create: `clipstack/clipstack/watcher.py`
 
-The watcher runs a polling loop on a background thread. It is not unit-tested; validated during the Task 8 smoke test.
+The watcher runs a polling loop on a background thread. It is not unit-tested; validated during the Task 9 smoke test.
 
 - [ ] **Step 1: Write the implementation**
 
@@ -494,7 +495,7 @@ git commit -m "feat: clipboard watcher with excluded-app filtering"
 **Files:**
 - Create: `clipstack/clipstack/hotkey.py`
 
-Listens for the configured global hotkey on a background thread via pynput. On trigger, runs a callback. Not unit-tested; validated during the Task 8 smoke test.
+Listens for the configured global hotkey on a background thread via pynput. On trigger, runs a callback. The callback is responsible for marshalling any UI work to the main thread (done in `app.py` via `AppHelper.callAfter`). Not unit-tested; validated during the Task 9 smoke test.
 
 - [ ] **Step 1: Write the implementation**
 
@@ -507,6 +508,8 @@ class HotkeyListener:
     """Global hotkey listener. Calls `on_trigger` when the hotkey fires.
 
     `hotkey` uses pynput's GlobalHotKeys format, e.g. "<cmd>+<shift>+v".
+    The callback runs on pynput's listener thread, so callers that touch
+    AppKit must marshal to the main thread themselves.
     """
 
     def __init__(self, hotkey: str, on_trigger):
@@ -530,17 +533,21 @@ git commit -m "feat: global hotkey listener"
 
 ---
 
-## Task 8: App entry point (wiring)
+## Task 8: Menu bar UI (NSStatusItem + NSMenu)
 
 **Files:**
-- Create: `clipstack/clipstack/app.py`
+- Create: `clipstack/clipstack/menubar.py`
 - Create: `clipstack/assets/icon.png`
 
-`app.py` wires config, store, watcher, hotkey, and the rumps menu bar UI together. The rumps app runs on the main thread; watcher and hotkey run on background threads.
+This module owns all status-item and menu code. The menu is rebuilt from the
+store every time it opens (via `NSMenuDelegate.menuNeedsUpdate_`), so the list
+is always current without a polling timer. `open()` programmatically clicks the
+status button so the hotkey can pop the menu. Not unit-tested; validated during
+the Task 9 smoke test.
 
 - [ ] **Step 1: Create a placeholder menu bar icon**
 
-Run this to generate a simple 16x16 black template PNG:
+Run this to generate a simple 16x16 black template PNG (used as a template image so macOS tints it for light/dark menu bars):
 
 ```bash
 cd clipstack && python3 -c "
@@ -555,117 +562,198 @@ print('icon written')
 "
 ```
 
-If PIL is not installed, fall back to no icon: the rumps app will show a text title instead (handled in Step 2 — `icon` is set only if the file exists). Either way, do not block on the icon.
+If PIL is not installed, skip the icon: `menubar.py` falls back to a text title (handled in Step 2 — the icon is only set if the file exists). Do not block on the icon.
 
 - [ ] **Step 2: Write the implementation**
 
 ```python
-# clipstack/clipstack/app.py
-import os
+# clipstack/clipstack/menubar.py
 from pathlib import Path
 
-import rumps
+from AppKit import (
+    NSApplication,
+    NSImage,
+    NSMenu,
+    NSMenuItem,
+    NSStatusBar,
+    NSVariableStatusItemLength,
+)
+from Foundation import NSObject
+from PyObjCTools.AppHelper import callAfter
+
+from clipstack.paste import paste_text
+
+ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+MENU_LABEL_MAX = 40
+
+
+class MenuBar(NSObject):
+    """Owns the NSStatusItem and its NSMenu.
+
+    Construct with MenuBar.create(store). pyobjc subclasses of NSObject
+    must not define __init__; use the create() factory plus _setup().
+    """
+
+    @classmethod
+    def create(cls, store):
+        self = cls.alloc().init()
+        self._store = store
+        self._build_status_item()
+        return self
+
+    def _build_status_item(self):
+        bar = NSStatusBar.systemStatusBar()
+        self._status_item = bar.statusItemWithLength_(NSVariableStatusItemLength)
+        button = self._status_item.button()
+        if ICON_PATH.exists():
+            image = NSImage.alloc().initWithContentsOfFile_(str(ICON_PATH))
+            image.setTemplate_(True)
+            button.setImage_(image)
+        else:
+            button.setTitle_("CLIP")
+
+        menu = NSMenu.alloc().init()
+        menu.setDelegate_(self)
+        self._status_item.setMenu_(menu)
+        self._menu = menu
+
+    # NSMenuDelegate: rebuild items from the store right before display.
+    def menuNeedsUpdate_(self, menu):
+        menu.removeAllItems()
+        items = self._store.items()
+        if not items:
+            empty = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "(empty)", None, ""
+            )
+            empty.setEnabled_(False)
+            menu.addItem_(empty)
+        else:
+            for index, text in enumerate(items):
+                item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    self._label_for(text), b"clipSelected:", ""
+                )
+                item.setTarget_(self)
+                item.setTag_(index)
+                menu.addItem_(item)
+        menu.addItem_(NSMenuItem.separatorItem())
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Quit ClipStack", b"terminate:", "q"
+        )
+        quit_item.setTarget_(NSApplication.sharedApplication())
+        menu.addItem_(quit_item)
+
+    def _label_for(self, text):
+        label = " ".join(text.split())
+        if len(label) > MENU_LABEL_MAX:
+            label = label[:MENU_LABEL_MAX] + "…"
+        return label
+
+    # Action fired when a history item is clicked.
+    def clipSelected_(self, sender):
+        items = self._store.items()
+        index = sender.tag()
+        if 0 <= index < len(items):
+            paste_text(items[index])
+
+    def open(self):
+        """Open the menu programmatically (called from the hotkey)."""
+        callAfter(self._perform_click)
+
+    def _perform_click(self):
+        self._status_item.button().performClick_(None)
+```
+
+- [ ] **Step 3: Verify it imports**
+
+Run: `cd clipstack && python -c "from clipstack.menubar import MenuBar; print('ok')"`
+Expected: prints `ok`. If `ModuleNotFoundError: No module named 'AppKit'`, run `pip3 install -r requirements.txt` first.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add clipstack/menubar.py assets/icon.png
+git commit -m "feat: native NSStatusItem menu with rebuild-on-open and paste"
+```
+
+---
+
+## Task 9: App entry point (wiring + run loop)
+
+**Files:**
+- Create: `clipstack/clipstack/app.py`
+
+`app.py` sets the app to accessory mode (no Dock icon), wires config, store,
+watcher, hotkey, and the menu bar together, and runs the AppKit event loop.
+
+- [ ] **Step 1: Write the implementation**
+
+```python
+# clipstack/clipstack/app.py
+from pathlib import Path
+
+from AppKit import (
+    NSApplication,
+    NSApplicationActivationPolicyAccessory,
+)
+from PyObjCTools import AppHelper
 
 from clipstack import config
 from clipstack.store import Store
 from clipstack.watcher import Watcher
 from clipstack.hotkey import HotkeyListener
-from clipstack.paste import paste_text
+from clipstack.menubar import MenuBar
 
 HOME = Path.home()
 CONFIG_PATH = HOME / ".clipstack" / "config.json"
 HISTORY_PATH = HOME / ".clipstack" / "history.json"
-ICON_PATH = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
-
-MENU_LABEL_MAX = 40
-
-
-class ClipStackApp(rumps.App):
-    def __init__(self, store, cfg):
-        icon = str(ICON_PATH) if ICON_PATH.exists() else None
-        super().__init__("ClipStack", icon=icon, title=None if icon else "📋",
-                         template=True)
-        self.store = store
-        self.cfg = cfg
-        self._rebuild_menu()
-
-    def _rebuild_menu(self):
-        self.menu.clear()
-        items = self.store.items()
-        if not items:
-            self.menu.add(rumps.MenuItem("(empty)", callback=None))
-        else:
-            for text in items:
-                self.menu.add(self._make_item(text))
-        self.menu.add(rumps.separator)
-        self.menu.add(rumps.MenuItem("Quit", callback=rumps.quit_application))
-
-    def _make_item(self, text):
-        label = " ".join(text.split())
-        if len(label) > MENU_LABEL_MAX:
-            label = label[:MENU_LABEL_MAX] + "…"
-        item = rumps.MenuItem(label, callback=self._on_select)
-        item._clip_text = text
-        return item
-
-    def _on_select(self, sender):
-        paste_text(sender._clip_text)
-
-    @rumps.timer(1)
-    def _refresh(self, _):
-        # Keep the menu in sync with the watcher's additions.
-        self._rebuild_menu()
-
-    def open_menu(self):
-        # Triggered by the hotkey; rumps shows the menu on icon click,
-        # so we surface the app by clicking programmatically is not exposed.
-        # Instead we post a notification to draw attention; the user clicks
-        # the menu bar icon. Hotkey primarily ensures the app is frontmost.
-        rumps.notification("ClipStack", "", "Click the menu bar icon to pick")
 
 
 def main():
     cfg = config.load(CONFIG_PATH)
     store = Store(HISTORY_PATH, max_items=cfg["max_items"])
 
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+    menubar = MenuBar.create(store)
+
     watcher = Watcher(store, cfg["excluded_apps"])
     watcher.start()
 
-    app = ClipStackApp(store, cfg)
-
-    hotkey = HotkeyListener(cfg["hotkey"], app.open_menu)
+    hotkey = HotkeyListener(cfg["hotkey"], menubar.open)
     hotkey.start()
 
-    app.run()
+    AppHelper.runEventLoop()
 
 
 if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 3: Smoke test the whole app manually**
+- [ ] **Step 2: Smoke test the whole app manually**
 
 Run: `cd clipstack && pip3 install -r requirements.txt && python -m clipstack.app`
 
 Expected behavior:
-1. A 📋 / icon appears in the menu bar.
-2. Copy some text in another app (e.g. `⌘C` in a browser). Within ~1.5s it appears in the menu.
+1. A menu bar icon (or `CLIP` text) appears. No Dock icon.
+2. Copy some text in another app (`⌘C`). Open the menu from the icon → the new item is at the top.
 3. Click a menu item → it pastes into the focused app.
-4. Copy text while a password manager is frontmost → it does NOT appear (if that bundle id is in `excluded_apps`).
-5. Quit via the menu.
+4. Press the hotkey (`⌘⇧V`) → the menu pops open without clicking the icon.
+5. Copy text while a password manager (a bundle id in `excluded_apps`) is frontmost → it does NOT appear.
+6. Quit via the menu's "Quit ClipStack".
 
 macOS will prompt for **Accessibility** and **Input Monitoring** permissions on first run (needed for hotkey + paste simulation). Grant them in System Settings → Privacy & Security, then relaunch.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add clipstack/app.py assets/icon.png
-git commit -m "feat: app entry point wiring menu bar, watcher, and hotkey"
+git add clipstack/app.py
+git commit -m "feat: app entry point wiring accessory app, watcher, hotkey, menu"
 ```
 
 ---
 
-## Task 9: Launch Agent + install/uninstall scripts
+## Task 10: Launch Agent + install/uninstall scripts
 
 **Files:**
 - Create: `clipstack/com.clipstack.plist`
@@ -674,7 +762,7 @@ git commit -m "feat: app entry point wiring menu bar, watcher, and hotkey"
 
 - [ ] **Step 1: Create the Launch Agent template**
 
-`__CLIPSTACK_DIR__` and `__PYTHON__` are placeholders that `install.sh` substitutes.
+`__CLIPSTACK_DIR__`, `__PYTHON__`, and `__HOME__` are placeholders that `install.sh` substitutes.
 
 ```xml
 <!-- com.clipstack.plist -->
@@ -782,7 +870,7 @@ git commit -m "feat: Launch Agent and install/uninstall scripts"
 
 ---
 
-## Task 10: README
+## Task 11: README
 
 **Files:**
 - Create: `clipstack/README.md`
@@ -818,7 +906,7 @@ launchctl kickstart -k gui/$(id -u)/com.clipstack
 
 - Copy anything as usual (`⌘C`). It's added to your history.
 - Click the menu bar icon to see recent items. Click one to paste it.
-- Or press the hotkey (default `⌘⇧V`) to be reminded, then click the icon.
+- Or press the hotkey (default `⌘⇧V`) to pop the menu open from anywhere.
 
 ## Configuration
 
@@ -873,16 +961,19 @@ git commit -m "docs: README with install, usage, and config"
 ## Self-Review Notes
 
 **Spec coverage:**
-- Menu bar trigger → Task 8 (rumps menu). ✓
-- Global hotkey trigger → Task 7 + wired in Task 8. ✓
+- Menu bar trigger → Task 8 (NSStatusItem + NSMenu). ✓
+- Global hotkey truly opens the menu → Task 7 + Task 8 `open()`/`performClick_`, wired in Task 9. ✓
 - Configurable cap/hotkey/exclusions → Task 2 (config). ✓
-- Paste immediately on selection → Task 5 + Task 8. ✓
+- Paste immediately on selection → Task 5 + Task 8 `clipSelected_`. ✓
 - Excluded apps via frontmost bundle id → Task 4 + Task 6. ✓
 - History persistence + corrupt-file reset → Task 3. ✓
-- One-command install + Launch Agent + KeepAlive → Task 9. ✓
+- One-command install + Launch Agent + KeepAlive → Task 10. ✓
 - Error handling (corrupt config/history, non-text clipboard) → Tasks 2, 3, 6. ✓
 - Tests for store + config → Tasks 2, 3. ✓
+- No Dock icon (accessory app) → Task 9. ✓
 
-**Known platform note:** rumps does not expose a public API to programmatically open the menu from a hotkey. The hotkey therefore posts a notification cue (Task 8 `open_menu`); the menu bar click remains the primary open path. This is an honest limitation, not a placeholder — if a future contributor wants true hotkey-open they would need a custom NSStatusItem. Flagged here so the implementer doesn't treat it as a bug.
+**Threading note:** the hotkey callback runs on pynput's thread. `MenuBar.open()` uses `AppHelper.callAfter` to marshal `performClick_` onto the main thread, which is required for AppKit calls. This is implemented in Task 8, not left as an exercise.
 
-**Type consistency:** `Store` constructor signature `(path, max_items)`, `store.items()`, `store.add(text)`, `config.load(path)`, `paste_text(text)`, `frontmost_bundle_id()`, `Watcher(store, excluded_apps)`, `HotkeyListener(hotkey, on_trigger)` — all consistent across tasks.
+**pyobjc subclass note:** `MenuBar` subclasses `NSObject`, so it uses a `create()` factory + `alloc().init()` instead of `__init__` (pyobjc convention). Flagged so the implementer doesn't "fix" it into a normal constructor.
+
+**Type consistency:** `Store(path, max_items)`, `store.items()`, `store.add(text)`, `config.load(path)`, `paste_text(text)`, `frontmost_bundle_id()`, `Watcher(store, excluded_apps)`, `HotkeyListener(hotkey, on_trigger)`, `MenuBar.create(store)`, `menubar.open` — all consistent across tasks.
