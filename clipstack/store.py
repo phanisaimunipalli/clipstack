@@ -43,3 +43,7 @@ class Store:
 
     def items(self) -> "list[str]":
         return list(self._items)
+
+    def clear(self) -> None:
+        self._items = []
+        self._save()

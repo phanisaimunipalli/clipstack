@@ -59,3 +59,13 @@ def test_blank_text_is_ignored(tmp_path):
     s.add("   ")
     s.add("")
     assert s.items() == []
+
+
+def test_clear_empties_history_and_persists(tmp_path):
+    path = tmp_path / "history.json"
+    s = Store(path, max_items=50)
+    s.add("a")
+    s.add("b")
+    s.clear()
+    assert s.items() == []
+    assert json.loads(path.read_text()) == []
