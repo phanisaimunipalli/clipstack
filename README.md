@@ -61,6 +61,15 @@ Edit `~/.clipstack/config.json`:
 
 Restart after editing: `launchctl kickstart -k gui/$(id -u)/com.clipstack`
 
+## Updating
+
+```bash
+./update.sh
+```
+
+This pulls the latest version and restarts ClipStack. If the update changed
+dependencies or packaging, it re-runs the installer for you automatically.
+
 ## Uninstall
 
 ```bash
