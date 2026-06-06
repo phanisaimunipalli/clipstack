@@ -1,5 +1,9 @@
 # ClipStack
 
+<p align="center">
+  <img src="assets/demo.gif" alt="ClipStack demo: open the menu bar history and paste an earlier copy" width="760">
+</p>
+
 A tiny, open source clipboard history manager for macOS. It lives in your menu
 bar, opens with a global hotkey, and pastes the item you pick straight into
 whatever app you are using.
